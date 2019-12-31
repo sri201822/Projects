@@ -1,0 +1,476 @@
+----------------------------------------------------------------- Hive Assignment -----------------------------------------------------------------------------------------
+--Analyze trips made by the taxis in the New York City based on the data set provided by The New York City Taxi & Limousine Commission (TLC) for November and December 2017
+
+-- For clear flow of analysis I have considered the entire analysis in 3 steps:-
+-- Step 1 : Load Data, Basic Data Quality Checks and Exploratory data analysis
+-- Step 2 : Analysis I (Results to queries asked in assignment)
+-- Step 3 : Analysis II(Results to queries asked in assignment)
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------Step 1: Load Data, Basic Data Quality Checks and EDA
+
+--Set the environment by loading the required JAR file
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+-- SET hive.exec.max.dynamic.partitions = 1000;
+-- SET hive.exec.max.dynamic.partitions.pernode = 1000;
+
+-- I have created a database with name sriharsha201822 and loaded data into that database
+-- Let's create an external table with name harsha_taxi_external and load data from the path /common_files/nyc_trip_data
+-- Here I chose external table so that even if i drop the table data remains unaffected
+
+-- Drop if duplicate table with the same name is found
+DROP TABLE harsha_taxi_external;
+
+-- Creating external table and load source data
+CREATE EXTERNAL TABLE IF NOT EXISTS harsha_taxi_external(
+VendorID int, 
+tpep_pickup_datetime string, 
+tpep_dropoff_datetime string,
+passenger_count int, 
+trip_distance double,
+RateCodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int, 
+fare_amount double, 
+extra double, 
+mta_tax double, 
+tip_amount double, 
+tolls_amount double,
+improvement_surcharge double,
+total_amount double)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LOCATION '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="2");
+
+-- Here I took skip.header.line.count as 2 since 1st line is header and 2nd line is empty (saw it from downloaded dataset csv file)
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Basic Data quality checks
+--Check if data is properly loaded(data types and schema)
+--For this selecting the 20 rows of data
+select * from harsha_taxi_external limit 20;
+--From the output of the query, it is uderstood that data is loaded properly and scheme is also appropriate
+---Check total record count
+select count(*) from harsha_taxi_external; -- 18793079 records 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Q1: How many records has each TPEP provider provided? 
+--As per data dictionary: vendorid as 1 is "Creative Mobile Technologies" and 2 is "VeriFone Inc"
+--Vendor wise record count
+select VendorID, count(*) as records from harsha_taxi_external group by VendorID order by VendorID;
+-- "Creative Mobile Technologies" - 8447149
+-- "VeriFone Inc" - 10345930
+-- Also there are no other vendor ID's apart from 1 & 2, which means no error issues in vendorID column
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--Q2. The data provided is for months November and December only. Check whether the data is consistent, and if not, identify the data quality issues.
+
+-- Let's Start with tpep_pickup_datetime
+--Checking if any null values are available in pick up time
+select count(*) from harsha_taxi_external where tpep_pickup_datetime IS NULL;
+-- There are no null values in pick up date time
+
+-- Check for Null value  in drop off time column
+select count(*) from harsha_taxi_external where tpep_dropoff_datetime IS NULL;
+-- There are no null values in drop off date time
+
+-- Let's do Year and Month validation in pick up data
+-- The analysis is required for year 2017 and months of November and December only, checking for years and months in the data
+select  year(tpep_pickup_datetime)as year, month(tpep_pickup_datetime)as month, 
+count(*)as records from harsha_taxi_external
+group by year(tpep_pickup_datetime), month(tpep_pickup_datetime)
+order by year, month;
+--There are 315 records where year is ranging from 2001 to 2041 and months other than Nov and Dec 
+-- where as data collected is only for months of nov and dec of year 2017 as expected
+-- This clearly is one of data quality issues
+
+-- Similarly let's check for dropoff timestamp column as well
+select year(tpep_dropoff_datetime) as Dropoff_Year, month(tpep_dropoff_datetime) as Dropoff_Month, count(*) as No_of_Records
+from harsha_taxi_external
+group by year(tpep_dropoff_datetime), month(tpep_dropoff_datetime)
+order by Dropoff_Year, Dropoff_Month;
+
+-- There are total of 1907 records ranging from 2001 to 2041 which is a data quality issue and needs to be corrected
+-- as we are expecting only November and December 2017 data
+
+--Pick up and drop off time validation
+-- checking for other data quality issues like difference between pick up date time and drop off data time.
+-- In case of valid data pick up date time should always be  before drop off date time
+select count(*) as records from harsha_taxi_external where unix_timestamp(tpep_dropoff_datetime) < unix_timestamp(tpep_pickup_datetime);
+-- 1419 are identified where pick up time is afer drop off time
+-- this is a clear case of data quality issue which need to be cleaned or eliminated
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Q3: You might have encountered unusual or erroneous rows in the dataset. 
+--Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? 
+-- For this question EDA analysis need to be carried out on all columns in reference to the data dictionary
+-- For trip start time and end time analysis is already performed as part of question 2
+
+-- Let's check every column one after one
+-- Vendor ID Validation
+-- As per data dictionary, vendor ID should be either 1 or 2.
+select distinct(VendorID) from harsha_taxi_external;
+-- There are only two vendor ID's in entire data which means no quality in vendor ID
+-- There is already few undesired year details in tpep_pickup_datetime and tpep_dropoff_datetime as we have seen in Q2. query answer 
+
+-- Passenger count validation
+-- Passenger count: Any legitimate trip will have a min passenger count of 1
+-- Since this field is entered by driver, there are chances of having errors and let's check it
+select passenger_count, count(*)
+from harsha_taxi_external
+group by passenger_count;
+-- The passenger count is varying from 0 to 9 and 192
+--- 192 is clearly abnormal number
+-- As per US laws, max passenger count allowed is 6 including kids(http://www.nyc.gov/html/tlc/html/faq/faq_pass.shtml)
+-- For final analysis we should exclude data with passenger count as 0, 7, 8, 9 and 192
+
+-- Passenger count validation through total amount charged
+select count(*) from harsha_taxi_external where passenger_count = 0 and total_amount !=0;
+--108960 Trips are charged when passenger count is 0, 
+-- This is error as no trip can happen when passenger count is 0 and how can there be some total amount when no trip happens
+
+
+-- Let's check for Trip Distance
+select min(trip_distance) as min_trip_distance, max(trip_distance) as max_trip_distance from harsha_taxi_external;
+-- Trip distance is ranging from 0 to 702.5 miles. 
+-- Let's check for the case of trip distance 0 if there is any total amount charged
+select sum(total_amount) as sum_total_amount,avg(total_amount) as avg_total_amount from harsha_taxi_external where trip_distance = 0;
+-- Avg price of trips is 28.91$, which means some trips with 0 distance are charged,
+---waiting time after booking might be one of the reason. No discrepency.
+
+-- Let's go for RateCodeID Validation
+-- RateCodeID: Values should be from 1 to 6 as per data dictionary 
+select count(DISTINCT RateCodeID) as Rate_codeID from harsha_taxi_external ;
+
+-- There are 7 rate codes. However as per dictionary only 6 should be present which is an error here and needs to be corrected
+--Let's see how many records are there for ratecodeid 7
+select RateCodeID, count(*) as No_of_Records from harsha_taxi_external group by RateCodeID order by RateCodeID desc;
+
+-- 99 is the invalid rate code, which should be eliminated in final analysis
+
+-- Let's check for Store and Fwd flag validation
+-- Store_and_fwd_flag: Values should be from 1 to 6 as per data dictionary 
+select store_and_fwd_flag, count(*) from harsha_taxi_external group by store_and_fwd_flag order by store_and_fwd_flag;
+-- store_and_fwd_flag is as per dictionary. Only Y and N values are recorded.  No error
+
+-- Let's check for PULocationID and DOLocationID
+
+select count(*) from harsha_taxi_external where PULocationID is NULL;
+select count(*) from harsha_taxi_external where DOLocationID is NULL;
+-- All the records are properly updated with pick up and drop location as there are no NULL entries.  No error issues.
+
+-- Let's check for Payment type 
+-- payment_type:
+select payment_type, count(*) from harsha_taxi_external group by payment_type order by payment_type;
+-- Payment type is recorded as 1 or 2 or 3 or 4 which are as per specification. No error.
+
+-- Let's check for Fare amount 
+-- fare_amount: Legitimate fare amount will be >=0 
+select min(fare_amount) as min_amount, max(fare_amount) as max_amount from harsha_taxi_external;
+-- fare is ranging from -499 to 393221.5. Records with fare <0 are error records and should be cleaned/eliminated in final analysis
+
+-- Let's check for  Extra amount 
+-- extra: Miscellaneous extras and surcharges. Currently, this only includes the $0.50 and $1 rush hour and overnight charges.
+select min(extra) as min_amont, max(extra) as max_amount from harsha_taxi_external;
+-- As per dictionary, extra charges can be 0 or 0.5 or 1.
+-- But query shows that there are other values as the range is from -48.64 to 69.8
+-- Extra charges other than 0, 0.5 or 1 are undesired should be eliminated in final analysis.
+
+-- Let's check for MTA tax
+--mta_tax: $0.50 MTA tax that is automatically triggered based on the metered rate in use. Which means only 0 and 0.5 are allowed
+select min(mta_tax) as min_amount, max(mta_tax) as max_amount from harsha_taxi_external;
+--mta tax is ranging from -0.5 to 117.85
+select mta_tax, count(*) from harsha_taxi_external group by mta_tax order by mta_tax;
+-- There are values other than 0 and 0.5 in mta tax which need to be eliminated in final analysis.
+
+-- Let's check for Tip amount 
+--tip_amount: This field is automatically populated for credit card tips. Cash tips are not included.
+select min(tip_amount) as min_tip_amount, max(tip_amount) as max_tip_amount from harsha_taxi_external;
+-- tips are ranging from -218 to 496. Legitimate tip will always be greater than or equal to 0.
+
+-- Also tips should be charged only when payment type is card and should not include cash tips.Let's verify it
+select count(*) from harsha_taxi_external where tip_amount != 0  and payment_type != 1;
+-- There are 289 records where tip is charged when payment type is not card.
+-- Records with tip <0 and tips paid when payment type is not card should be eliminated in final analysis
+
+-- Let's check for  Tolls amount 
+--tolls_amount: should be greater than or equal to 0
+select min(tolls_amount) as min_amount, max(tolls_amount) as max_amount from harsha_taxi_external;
+-- Tolls amount is ranging from -19 to 1018.95
+-- Records with tolls amount <0  need to be eliminated in final analysis
+
+-- Let's check for Improvement surcharge 
+--improvement_surcharge: $0.30 improvement surcharge assessed trips at the flag drop.
+
+select improvement_surcharge, count(*) from harsha_taxi_external group by improvement_surcharge order by improvement_surcharge desc;
+-- improvement_surcharge should be either 0 or 0.3, however the values are ranging from -0.3 to 1.
+-- Values other than 0 and 0.3 should be eliminated in final analysis.
+
+-- Let's check for Total Amount validation
+--total_amount: Legitimate value should be greater than or equal to 0.
+select min(total_amount) as min_amount, max(total_amount) as max_amount from harsha_taxi_external;
+-- Total amount is ranging from -499.3 to 393222.22
+-- Values less than 0 need to be eliminated in final analysis
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--SUMMARY of Column level Analysis:
+-----------------------------------
+-- Vendor ID - No errors
+-- tpep_pickup_datetime & tpep_dropoff_datetime - Records found where year other than 2017 and months other than November and December are entered.
+--                                                Also there are records where pickup time stamp > drop time stamp
+-- Passenger Count - Errors are present found
+--                   Passenger count allowed as per law is max 6 (http://www.nyc.gov/html/tlc/html/faq/faq_pass.shtml), but records found with other numbers as well
+--                   Trips are charged when passenger count is 0, which is wrong
+-- Trip distance - No error
+-- Rate code -Error records are present. Entries with invalid code "99" are found, which is not valid as per data dictionary
+-- Store_and_fwd_flag  - No errors
+-- PULocationID and DOLocationID - No errors
+-- Payment type - No errors
+-- Fare Amount - Errors are present. Records with amount in negative are found
+-- Extra Amount - Errors are present.Records with amount other than 0, 0.5 and 1 are found.
+-- MTA Tax  - Errors are present. Records with values other than 0 or 0.5 are found which is invalid
+-- Tip amount - Errors are present. Records with amount in negative are found and tip when payment type = 2(cash)
+-- Tolls_amount - Errors are present. Records with amount in negative are found
+-- Improvement_surcharge - Errors are present. Records with amount other 0 and 0.3 are found which is invalid
+-- Total_amount - Errors are present. Records with amount in negative are found
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Q3.You might have encountered unusual or erroneous rows in the dataset. 
+-- Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? 
+-- Let's count the number of bad entries vendor wise
+
+select VendorID, count(*) as fault_records from harsha_taxi_external
+where (year(tpep_pickup_datetime) !=2017 or month(tpep_pickup_datetime) not in (11,12) 
+       or unix_timestamp(tpep_pickup_datetime) >= unix_timestamp(tpep_dropoff_datetime) 
+       or passenger_count not in (1,2,3,4,5,6) 
+       or (RateCodeID not in (1,2,3,4,5,6) or (passenger_count = 1 and RateCodeID =6))
+       or (fare_amount <= 0) 
+       or extra not in (0,0.5,1)
+       or mta_tax not in(0,0.5) 
+       or (tip_amount < 0 or (tip_amount > 0 and payment_type != 1))
+       or tolls_amount < 0
+       or improvement_surcharge not in (0,0.3) 
+       or total_amount <= 0)
+group by VendorID;
+
+--  Results: For vendor 1(Creative Mobile Technologies, LLC) there are 157867 faulty records
+--                           For vendor 2(VeriFone Inc) there are 56658 faulty records 
+
+
+-- % of bad records based on vendor wise total records
+select VendorID,count(*) from harsha_taxi_external group by VendorID;
+--- Vendor 1---8447149    Vendor 2---10345930
+-- Vendor 1= 157867/8447149 = 1.87%
+-- Vendor 2= 56658/10345930 = 0.54%
+-- It is clear that vendor 1 Creative Mobile Technologies, LLC is doing a bad job of providing wrong data among both.
+-- However the percentage of faulty records are less than 2%
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------Step 1 Completed---------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------------------
+----------Step 2: Analysis I(Answers for assignment questions)-----------------------------------------------------------------------------
+-- From my step 1 analysis it is found that there are total of 214525 faulty records out of 18793079 which is 1.14%
+-- As the fault percentage is very less this data can be eliminated for further analysis
+
+-- Let's create a new ORC partitioned table which is free from these faulty or bad records
+-- From the data let's filter only 2017 yr data and partitioning based on months and days
+
+--Setting up the environment for creating partitions
+SET hive.exec.max.dynamic.partitions = 100000;
+SET hive.exec.max.dynamic.partitions.pernode = 100000;
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- creating ORC partitioned table
+-- Drop table with same name if found
+DROP TABLE harsha_taxi_mrk_ORC;
+
+create external table if not exists harsha_taxi_mrk_ORC(
+VendorID int, 
+tpep_pickup_datetime string, 
+tpep_dropoff_datetime string,
+passenger_count int, 
+trip_distance double,
+RateCodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int, 
+fare_amount double, 
+extra double, 
+mta_tax double, 
+tip_amount double, 
+tolls_amount double,
+improvement_surcharge double,
+total_amount double) 
+partitioned by (mnth int, days int)
+stored as orc location '/user/hive/warehouse/sriharsha201822/harsha_taxi_ORC'
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Let's Load partitioned table with filtered data as per analysis in Step 1
+insert overwrite table harsha_taxi_mrk_ORC partition(mnth, days)
+select VendorID, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count, trip_distance,
+       RateCodeID, store_and_fwd_flag, PULocationID, DOLocationID, payment_type, fare_amount, 
+       extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, total_amount,
+       month(tpep_pickup_datetime)as mnth, day(tpep_pickup_datetime)as days
+from harsha_taxi_external
+where  year(tpep_pickup_datetime) =2017 and month(tpep_pickup_datetime) in (11,12) 
+       and unix_timestamp(tpep_pickup_datetime) < unix_timestamp(tpep_dropoff_datetime) 
+       and passenger_count in (1,2,3,4,5,6)
+       and (RateCodeID in (1,2,3,4,5) or (RateCodeID =6 and passenger_count != 1))
+       and fare_amount>0
+       and extra in (0,0.5,1)
+       and mta_tax in(0,0.5) 
+       and ((tip_amount >= 0 and payment_type = 1) or (tip_amount = 0 and payment_type!=1))
+       and tolls_amount >= 0
+       and improvement_surcharge in (0,0.3) 
+       and total_amount > 0;
+ -- Checking count of records in partitioned table after clearing fault records 
+select count(*) from harsha_taxi_mrk_orc;
+--18578554 is the record count which matches with level 1 summary
+------------------------------------------------------------------------------------------------------------------------------
+-- As the data is already filtered for 2017, not going to use year filter in further analysis.
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--Q1: Compare the overall average fare per trip for November and December.
+--Comparing average fare trip for months of Nov and December
+select mnth,round(avg(fare_amount),2) as Average_fare_amount from harsha_taxi_mrk_orc group by mnth order by mnth desc;
+-- Average fare per trip in November is 12.96$ compared to 12.8$ in December
+-- Therefore the Average fare_charge recorded during November 2017 is 1.0125% higher than the average fare_charge recorded in December 2017
+
+-----------------------------------------------------------------------------------------------------------------------------
+--Q2:Explore the number of passengers per trip - how many trips are made by each level of Passenger_count? 
+--Do most people travel solo or with other people?
+select h.passenger_count, h.trip_count, round(100* h.trip_count / (SUM(h.trip_count) OVER ()), 2) as percentage
+from(select passenger_count, count(*) as trip_count from harsha_taxi_mrk_orc group by passenger_count)h
+group by h.passenger_count, h.trip_count
+order by percentage desc;
+-- the results from the query output depict the trips made by each level of passenger count as below:
+-- 1 - 13179927   70.94%
+-- 2 - 2797145    15.06%
+-- 5 - 871198     4.69%
+-- 3 - 805647     4.34%
+-- 6 - 528569     2.85%
+-- 4 - 396068     2.13%
+-- we can clearly see that count of trips done by solo passengers is very high when compared to group passengers.
+-- 70.94% of the trips are made by solo travellers and remaining 30%(approx) is made by passengers with more than 1 (group passengers)
+---------------------------------------------------------------------------------------------------------------------------
+--Q3: Which is the most preferred mode of payment?
+
+select h.payment_type, h.tot_count, round(100* h.tot_count / (SUM(h.tot_count) OVER ()), 2) as percentage
+from(select payment_type, count(*) as tot_count from harsha_taxi_mrk_orc group by payment_type)h
+group by h.payment_type, h.tot_count
+order by percentage desc;
+-- The results obtained are:
+-- 1-12514212    67.36%
+-- 2-5950713     32.03%
+-- 3-89985       0.48%
+-- 4-23644       0.13%
+-- we can see that payment_type 1-Credit card is highly used mode of payment as we can see the number of records are highest for credit card
+-- So most preferred mode of payment is payment_type 1 which is Credit card payment and is about 67.36% of total
+------------------------------------------------------------------------------------------------------------------------------------
+--Q4.What is the average tip paid? Compare the average tip with the 25th, 50th and 75th percentiles
+-- and comment whether the average tip is a representative statistic (of the central tendency) of tip amount paid.
+
+select round(avg(tip_amount),3) as average_tip_amount from harsha_taxi_mrk_orc;
+-- We can see that average tip amount paid is 1.831$
+-- let's check payment type wise average tip amount paid
+select payment_type,round(avg(tip_amount),4) as average_tip_amount,count(*) as Number_of_records from harsha_taxi_mrk_ORC
+group by payment_type order by payment_type;
+-- so from the results we can declare that tip_amount is 0 for all payment_types except for payment_type 1 i.e. credit card payments have tip amounts
+
+select round(avg(tip_amount),2) as average_tip_amount,round(percentile_approx(tip_amount,0.25),2)as 25th_Percentile, 
+round(percentile_approx(tip_amount, 0.50),2)as 50th_Percentile, round(percentile_approx(tip_amount, 0.75),2)as 75th_Percentile
+from harsha_taxi_mrk_orc;
+-- Here I am using percentile_approx() function as I have taken trip_amount as double and percentile() applies only on integer values
+-- The results are as follows:-
+-- average_tip_amount is 1.83
+-- 25th Percentile is 0
+-- 50th percentile is 1.36
+-- 75th percentile is 2.45
+-- -- From the out put it is evident that average tip(1.83) is greater than 50th percentile(1.36)
+-- This implies that the average tip is skewed towards right and will not be a good representative of central tendency.
+-- 50th Percentile value of tip amount which is median will be a better representative of central tendency
+---We can consider Median (50th Percentile) as a better representative of central tendency.
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+--Q5.Explore the Extra (charge) variable - what is the fraction of total trips where an extra charge is levied?
+
+select h.extra, h.tot_count, round(100* h.tot_count / (SUM(h.tot_count) OVER ()), 2) as percentage
+from(select extra, count(*) as tot_count from harsha_taxi_mrk_orc group by extra)h
+group by h.extra, h.tot_count
+order by percentage desc;
+-- The results are:-
+-- 0    10026901   53.97%
+-- 0.5   5780548    31.11%
+-- 1      2771105    14.92%
+-- Extra of 0 represents extra charge is not levied. 0.5 and 1 represents 0.5$ and 1$ are levied as extra charge.
+-- From the data it is evident that 53.97% trips are not levied with extra charge, that means 46.03% trips have extra charge levied
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------ Step 2 Completed--------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Now Step 3 (Analysis II):-
+
+-- Q1.What is the correlation between the number of passengers and tip paid? Do multiple travellers pay more compared to solo travellers?
+-- Let's see how the passenger_count and tip_amount is varying with pasenger_count
+
+select round(corr(passenger_count, tip_amount),4) as correlation,
+       round(avg(CASE when passenger_count = 1 then tip_amount else null end),2) as Solo_Average_tip,
+       round(avg(CASE when passenger_count != 1 then tip_amount else null end),2) as Group_Average_tip
+from harsha_taxi_mrk_orc;
+-- Correlation between passenger count and tip amount is -0.0045 which represents that the correlation is negative with less magnitude (negligible).
+--  The tip amount doesnt vary much with the number of passengers although solo passengers are likely to pay little higher tip.
+--  query output reveals that:
+-- Average Tip amount in case of solo traveller is 1.84$
+-- Average Tip amount in case of multiple travellers is 1.81$
+-- This reveals that solo travellers are likely to pay tip amount little higher than  multiple travellers
+-- However the correlation is not such strong to make a strong claim.
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Q2.Segregate the data into five buckets of tip paid: [0-5), [5-10), [10-15) , [15-20) and >=20. 
+-- Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+select Tips_bucket, count(*)as Tips_count, round(100*count(*)/max(records),2)as percentage
+from (select count(*) over () records,
+	CASE when tip_amount >= 0 and tip_amount <  5 then 'Bucket_0_5' 
+         when tip_amount >= 5 and tip_amount < 10 then 'Bucket_5_10'
+	     when tip_amount >=10 and tip_amount < 15 then 'Bucket_10_15'
+	     when tip_amount >=15 and tip_amount < 20 then 'Bucket_15_20'
+	     else 'Bucket>=20' 
+	end as Tips_Bucket 
+    from harsha_taxi_mrk_orc)s
+group by Tips_Bucket
+order by percentage desc;
+--- The Results are:-
+-- Tips_bucket        Tips_count           Percentage
+-- Bucket_0_5         17155539               92.34%
+-- Bucket_5_10        1044974                 5.62%
+-- Bucket_10_15        321600                  1.73%
+-- Bucket_15_20        37536                    0.2%
+-- Bucket>=20          18905                    0.1%
+-- From the output it is clearly evident that in 92.34% of trips, tips are paid in the range of 0$ to 5$
+
+-- Q3.Which month has a greater average speed - November or December? 
+-- Note that the variable speed will have to be derived from other metrics. Hint: You have columns for distance and time.
+select mnth, round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),3) as average_speed
+from harsha_taxi_mrk_orc
+group by mnth
+order by average_speed;
+--from the output, average speed of november is 12.626 MPH(miles per hour) and december is 12.559 MPH
+-- Avg speed of november is slightly higher than december by 0.067 MPH
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--Q4.Analyse the average speed of the most happening days of the year i.e. 31st December (New years eve) and 25th December (Christmas Eve) and 
+-- compare it with the overall average. 
+
+-- Overall average speed is:-
+select round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),2) as overall_average_speed
+from harsha_taxi_mrk_orc;
+-- Overall average speed is 12.59 MPH
+select days, round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600)),2) as Average_speed
+from harsha_taxi_mrk_orc where mnth = 12 and (days=25 or days=31)
+group by days;
+-- The results are:-
+-- days               average_speed
+-- 25                    16.77 MPH (miles per hour)
+-- 31                    13.99 MPH
+-- we can see that Overall Average speed is 12.59 MPH whereas Average speed on 25th(Christmas Eve) and 31st December(New Year's eve) is higher than Overall Average speed
+-- Average speed on 25th December is the highest.

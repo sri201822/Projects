@@ -1,0 +1,4 @@
+In this assignment we need to recognise hand written digits from mnist dataset
+we do have labels and pixel values as attributes
+first column is label/digit and remaining columns are pixel values
+we need to predict the digit correctly using SVM linear,RBF kernel,ploynomial kernels
